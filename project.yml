@@ -1,0 +1,110 @@
+name: SayWhen
+options:
+  bundleIdPrefix: local.saywhen
+  deploymentTarget:
+    iOS: "18.0"
+  developmentLanguage: zh-Hans
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    TARGETED_DEVICE_FAMILY: 1
+    MARKETING_VERSION: "1.1"
+    CURRENT_PROJECT_VERSION: 5
+targets:
+  SayWhen:
+    type: application
+    platform: iOS
+    sources: [SayWhen]
+    settings:
+      base:
+        TARGETED_DEVICE_FAMILY: "1"
+        PRODUCT_BUNDLE_IDENTIFIER: local.saywhen.app
+        DEVELOPMENT_TEAM: MFLYL78RAN
+        CODE_SIGN_STYLE: Automatic
+        INFOPLIST_FILE: SayWhen/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_PREVIEWS: YES
+  SayWhenTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+        excludes: [Audio]
+      - path: Tests/Audio
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - target: SayWhen
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+  SayWhenAudioTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: AudioValidation
+        excludes: [Fixtures, Licenses, SOURCES.md]
+      - path: AudioValidation/Licenses
+        type: folder
+        buildPhase: resources
+      - path: AudioValidation/SOURCES.md
+        buildPhase: resources
+      - path: AudioValidation/Fixtures
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - target: SayWhen
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+  SayWhenUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies:
+      - target: SayWhen
+    settings:
+      base:
+        TEST_TARGET_NAME: SayWhen
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  SayWhen:
+    build:
+      targets:
+        SayWhen: all
+    test:
+      targets:
+        - SayWhenTests
+        - name: SayWhenUITests
+          selectedTests: [FlowTests]
+  SayWhen-DeviceChecks:
+    build:
+      targets:
+        SayWhen: all
+    test:
+      targets:
+        - name: SayWhenUITests
+          selectedTests: [DeviceChecks]
+  SayWhen-Performance:
+    build:
+      targets:
+        SayWhen: all
+    test:
+      config: Release
+      targets:
+        - name: SayWhenUITests
+          selectedTests: [PerformanceTests]
+  SayWhen-RecordedSpeech:
+    build:
+      targets:
+        SayWhen: all
+    test:
+      targets: [SayWhenAudioTests]
+  SayWhen-StoreListing:
+    build:
+      targets:
+        SayWhen: all
+    test:
+      targets:
+        - name: SayWhenUITests
+          selectedTests: [StoreListingTests]

@@ -17,6 +17,7 @@
 <key>UIApplicationSceneManifest</key><dict><key>UIApplicationSupportsMultipleScenes</key><false/></dict>
 <key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
 <key>CFBundleURLTypes</key><array><dict><key>CFBundleURLSchemes</key><array><string>saywhen</string></array></dict></array>
+<key>NSCameraUsageDescription</key><string>说到的语音待办仅使用系统采集组件的麦克风通道。关闭相机权限也可以录入待办。</string>
 <key>NSMicrophoneUsageDescription</key><string>按住说话时，用麦克风录入这条待办。</string>
 <key>NSSpeechRecognitionUsageDescription</key><string>在本机将普通话转写成待办，供你查看和修改。</string>
 <key>NSCalendarsFullAccessUsageDescription</key><string>手动同步时，把标题、时间和备注写入所选日历，并在下次同步时核对和更新同一日程。</string>

@@ -43,10 +43,12 @@ final class StoreListingTests: XCTestCase {
             attachment.lifetime = .keepAlways
             self.add(attachment)
         }
+        app.buttons["settings"].tap()
         app.buttons["privacy"].tap()
         XCTAssertTrue(app.navigationBars["隐私政策"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.webViews.staticTexts["待办与语音"].waitForExistence(timeout: 6))
         app.buttons["完成"].tap()
+        app.navigationBars["设置"].buttons["取消"].tap()
         add("买咖啡豆")
         add("整理周末的照片")
         enter("明天上午九点提醒我赶火车，备注提前到站，带上身份证")

@@ -6,18 +6,22 @@ import Speech
 final class ReplayInput: SpeechInput {
     let file: AVAudioFile
     let duration: Double
+    private let endDelay: TimeInterval
     private let queue = DispatchQueue(label: "local.saywhen.tests.replay")
     private var request: SFSpeechAudioBufferRecognitionRequest?
+    private var recording: UtteranceAudio?
     var onEnd: (() -> Void)?
 
-    init(url: URL) throws {
+    init(url: URL, endDelay: TimeInterval = 0) throws {
+        self.endDelay = endDelay
         file = try AVAudioFile(forReading: url)
         duration = Double(file.length) / file.processingFormat.sampleRate
     }
 
-    func start(request: SFSpeechAudioBufferRecognitionRequest, ready: @escaping (Bool) -> Void) {
+    func start(request: SFSpeechAudioBufferRecognitionRequest, recording: UtteranceAudio?, ready: @escaping (Bool) -> Void) {
         queue.async {
             self.request = request
+            self.recording = recording
             ready(true)
             self.feed(started: .now(), ready: ready)
         }
@@ -36,15 +40,28 @@ final class ReplayInput: SpeechInput {
             try file.read(into: buffer, frameCount: count)
             guard buffer.frameLength > 0 else { ready(false); return }
             request.append(buffer)
+            recording?.appendOwned(buffer)
             let deadline = started + Double(file.framePosition) / rate
             queue.asyncAfter(deadline: deadline) { self.feed(started: started, ready: ready) }
         } catch { ready(false) }
     }
 
+    func continueWith(_ request: SFSpeechAudioBufferRecognitionRequest) {
+        queue.async {
+            guard self.request != nil else { return }
+            self.request?.endAudio()
+            self.request = request
+        }
+    }
+
     func stop() {
         queue.async {
-            self.request?.endAudio()
+            let closing = self.request
             self.request = nil
+            self.recording = nil
+            if self.endDelay > 0 {
+                self.queue.asyncAfter(deadline: .now() + self.endDelay) { closing?.endAudio() }
+            } else { closing?.endAudio() }
         }
     }
 }

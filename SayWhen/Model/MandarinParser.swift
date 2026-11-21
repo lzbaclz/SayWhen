@@ -55,6 +55,7 @@ struct MandarinParser {
         return value
     }
     private let numbers = "[0-9零〇一二两三四五六七八九十百]+"
+    private let periods = "凌晨|早晨|清晨|清早|早间|早上|上午|中午|下午|傍晚|晚上|晚间"
     private let trim = CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "，,。；;、"))
 
     func parse(_ text: String) -> [ParsedTask] {
@@ -151,14 +152,14 @@ struct MandarinParser {
         // Keep that wording, even when the request cannot be stripped as a prefix.
         let mentionsReminder = match(personalRequest, in: body) != nil
         var personalReminder = stripReminderRequest(from: &body)
-        body = body.replacingOccurrences(of: #"明早上?|明晨"#, with: "明天早上", options: .regularExpression)
+        body = body.replacingOccurrences(of: #"明(?:早晨|早上?|晨)"#, with: "明天早上", options: .regularExpression)
             .replacingOccurrences(of: #"明晚上?"#, with: "明天晚上", options: .regularExpression)
             .replacingOccurrences(of: #"今晚上?"#, with: "今天晚上", options: .regularExpression)
-            .replacingOccurrences(of: #"今早上?"#, with: "今天早上", options: .regularExpression)
+            .replacingOccurrences(of: #"今(?:早晨|早上?|晨)"#, with: "今天早上", options: .regularExpression)
             .replacingOccurrences(of: #"^(?:请)?在(?=大?后天|明天|今天|(?:下下?|这|本)?(?:周|星期|礼拜)|[0-9零〇一二两三四五六七八九十]+[月年点])"#,
                                   with: "", options: .regularExpression)
         let (day, conflict) = extractDay(from: &body)
-        guard !conflict, extractTime(from: &body, day: day, due: &draft.due) else {
+        guard !conflict, extractTime(from: &body, day: day, allowNextClock: mentionsReminder, due: &draft.due) else {
             draft.title = raw
             draft.due.kind = .none
             if personalReminder && draft.rule != .lead { draft.rule = .atDue }
@@ -171,7 +172,6 @@ struct MandarinParser {
             personalReminder = true
         }
         if personalReminder && draft.rule != .lead { draft.rule = .atDue }
-        let periods = "凌晨|早上|上午|中午|下午|傍晚|晚上"
         let ambiguous = "每(?:天|日|周|星期|月|年|隔)|之前|以前|周末|下星期(?![一二三四五六日天])|找个时间|有空|过几天|下个月|月底|月初|月末|周左右|下旬|中旬|上旬|节前|届时|周[一二三四五六日天]到|[0-9一二两三四五六七八九十]+号|过一阵|这几天|下周|下礼拜|稍后|周一|周二|周三|周四|周五|周六|周日|明天|后天|下班|提前|小时后|分钟后|天后|" + periods
         if let day, draft.due.kind == .allDay {
             var title = body
@@ -184,7 +184,7 @@ struct MandarinParser {
                     ?? draft.due.dayLabel(relativeTo: now)
                 let part = period?.full ?? ""
                 let ask = draft.rule == .lead ? "几点到期？" : "几点提醒？"
-                draft.title = title.trimmingCharacters(in: trim)
+                draft.title = ActionTitle.clean(title, personalCommand: personalReminder)
                 return ParsedTask(draft: draft, question: dayName + part + ask,
                                   missingTime: MissingTime(day: day, dayName: dayName, period: part))
             }
@@ -203,7 +203,7 @@ struct MandarinParser {
             if mentionsReminder && draft.rule != .lead { draft.rule = .atDue }
         }
         if draft.rule == .lead && draft.due.kind != .timed { question = "请核对到期与提前提醒的时间" }
-        draft.title = body.trimmingCharacters(in: trim)
+        draft.title = ActionTitle.clean(body, personalCommand: question == nil && personalReminder)
         if question == nil, match("[，,。].*(?:去|买|交|寄|接|打电话|发送)", in: draft.title) != nil {
             question = "请核对是否包含多件事"
         }
@@ -274,8 +274,8 @@ struct MandarinParser {
         return (result, hasExtraDate)
     }
 
-    private func extractTime(from body: inout String, day: Date?, due: inout Due) -> Bool {
-        let clock = "(凌晨|早上|上午|中午|下午|傍晚|晚上)?\\s*(?:差(" + numbers + ")分(?:钟)?\\s*)?(" + numbers + ")(?:点(?:钟)?|时|[:：])(?:(半|一刻|三刻|" + numbers + ")(?:分)?(?![点时:：]))?(?:过(" + numbers + ")分(?:钟)?)?"
+    private func extractTime(from body: inout String, day: Date?, allowNextClock: Bool, due: inout Due) -> Bool {
+        let clock = "(?:(" + periods + ")[，,\\s]*)?\\s*(?:差(" + numbers + ")分(?:钟)?\\s*)?(" + numbers + ")(?:点(?:钟)?|时|[:：])(?:(半|一刻|三刻|" + numbers + ")(?:分)?(?![点时:：]))?(?:过(" + numbers + ")分(?:钟)?)?"
         let delay = "(半|" + numbers + ")(?:个)?(小时|分钟)(?:之|以)?后"
         if let hit = match(delay, in: body) {
             let minutes: Int?
@@ -293,17 +293,23 @@ struct MandarinParser {
             if let day { due.kind = .allDay; due.date = day }
             return true
         }
-        guard let day, var hour = number(hit.groups[2]), (0..<24).contains(hour) else { return false }
+        guard var hour = number(hit.groups[2]), (0..<24).contains(hour) else { return false }
         let period = hit.groups[0]
-        if ["下午","晚上","傍晚","中午"].contains(period) && hour < 12 && (period != "中午" || hour <= 4) { hour += 12 }
-        if ["凌晨","上午"].contains(period) && hour == 12 { hour = 0 }
+        if ["凌晨","上午","早晨","清晨","清早","早间","早上"].contains(period) && hour > 12 { return false }
+        guard day != nil || (allowNextClock && (!period.isEmpty || hour > 12 || hour == 0)) else { return false }
+        if ["下午","晚上","晚间","傍晚","中午"].contains(period) && hour < 12 && (period != "中午" || hour <= 4) { hour += 12 }
+        if ["凌晨","上午","早晨","清晨","清早","早间","早上"].contains(period) && hour == 12 { hour = 0 }
         let minute = ["半": 30, "一刻": 15, "三刻": 45][hit.groups[3]] ?? number(hit.groups[3]) ?? 0
         let before = number(hit.groups[1]) ?? 0
         let after = number(hit.groups[4]) ?? 0
         guard (0..<60).contains(minute), (0..<60).contains(before), (0..<60).contains(after),
               before == 0 || after == 0, after == 0 || minute == 0,
-              let base = calendar.date(bySettingHour: hour, minute: minute, second: 0, of: day),
-              let date = calendar.date(byAdding: .minute, value: after - before, to: base) else { return false }
+              let base = calendar.date(bySettingHour: hour, minute: minute, second: 0, of: day ?? now),
+              var date = calendar.date(byAdding: .minute, value: after - before, to: base) else { return false }
+        if day == nil && date <= now {
+            guard let next = calendar.date(byAdding: .day, value: 1, to: date) else { return false }
+            date = next
+        }
         body.removeSubrange(hit.range)
         guard match(clock, in: body) == nil else { return false }
         due.kind = .timed

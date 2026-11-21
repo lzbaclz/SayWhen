@@ -31,7 +31,7 @@ final class TaskTests: XCTestCase {
                     XCTAssertEqual(due.calendar.component(.day, from: due.date), day, input)
                     XCTAssertEqual(due.calendar.component(.hour, from: due.date), hour, input)
                     XCTAssertEqual(due.calendar.component(.minute, from: due.date), hour == 15 ? 30 : 0, input)
-                    XCTAssertEqual(entry.draft.rule, hour == 8 ? .lead : .previousDay, input)
+                    XCTAssertEqual(entry.draft.rule, hour == 8 ? .lead : .followDefault, input)
                     if hour == 8 { XCTAssertEqual(entry.draft.leadMinutes, 120) }
                     count += 1
                 }
@@ -64,7 +64,7 @@ final class TaskTests: XCTestCase {
     }
 
     func testCalendarDayArithmeticAcrossYearAndDST() {
-        var draft = Draft(title: "复诊", due: Due(kind: .timed, date: date("2027-01-01T07:00:00Z"), zone: zone.identifier))
+        var draft = Draft(title: "复诊", due: Due(kind: .timed, date: date("2027-01-01T07:00:00Z"), zone: zone.identifier), rule: .previousDay)
         XCTAssertEqual(draft.nextReminder(after: .distantPast), date("2026-12-31T07:00:00Z"))
         draft.due.kind = .allDay
         XCTAssertEqual(draft.nextReminder(after: .distantPast), date("2026-12-31T12:00:00Z"))
@@ -77,7 +77,7 @@ final class TaskTests: XCTestCase {
 
     @MainActor func makeStore() throws -> TaskStore {
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
-        return try TaskStore(ModelContainer(for: Item.self, migrationPlan: MigrationPlan.self, configurations: config))
+        return try TaskStore(LocalDatabase.open(configuration: config))
     }
 
     @MainActor func testPaginationAndPersistentDetails() throws {
@@ -94,7 +94,7 @@ final class TaskTests: XCTestCase {
             store.context.insert(item)
         }
         try store.commit()
-        let fresh = TaskStore(store.context.container)
+        let fresh = try TaskStore(store.context.container)
         let page = try fresh.page(done: false, limit: 40)
         XCTAssertEqual(page.count, 40)
         XCTAssertEqual(page.prefix(2).map(\.title), ["事项 1","事项 0"])
@@ -199,6 +199,24 @@ extension TaskTests {
         }
         var correct = await checkPending(draft.due.date)
         XCTAssertTrue(correct)
+        var follower = draft
+        follower.rule = .followDefault
+        try store.update(item, with: follower)
+        let previousEvening = try XCTUnwrap(DefaultAdvance.previousEvening.time(for: follower.due))
+        correct = await checkPending(previousEvening)
+        XCTAssertTrue(correct, "系统中只有一个前晚 20:00 的待发通知")
+        try store.savePreferences(AppPreferences(advance: .minutes(120)))
+        correct = await checkPending(follower.due.date.addingTimeInterval(-7200))
+        XCTAssertTrue(correct)
+        follower.rule = .lead
+        follower.leadMinutes = 15
+        try store.update(item, with: follower)
+        try store.savePreferences(AppPreferences(advance: .minutes(90)))
+        correct = await checkPending(follower.due.date.addingTimeInterval(-900))
+        XCTAssertTrue(correct, "单条提前十五分钟应覆盖全局设置，且不重复排程")
+        try store.update(item, with: draft)
+        correct = await checkPending(draft.due.date)
+        XCTAssertTrue(correct)
         var edit = ReminderEdit(draft: draft, scheduled: item.desiredReminder, chooseTime: true, now: now)
         XCTAssertEqual(edit.time, item.desiredReminder)
         edit.time = now.addingTimeInterval(45)
@@ -240,7 +258,7 @@ extension TaskTests {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let url = folder.appending(path: UUID().uuidString + ".store")
         let config = ModelConfiguration(url: url, cloudKitDatabase: .none)
-        let container = try ModelContainer(for: Item.self, migrationPlan: MigrationPlan.self, configurations: config)
+        let container = try LocalDatabase.open(configuration: config)
         let context = ModelContext(container)
         for index in 0..<1000 {
             var draft = Draft(title: "基准待办 " + String(index + 1), notes: "性能样本备注")
@@ -276,7 +294,7 @@ extension TaskTests {
     @MainActor func testDeniedFailureRecoveryAndNotificationCapacity() async throws {
         let center = TestCenter()
         let memory = try makeStore()
-        let store = TaskStore(memory.context.container, center: center)
+        let store = try TaskStore(memory.context.container, center: center)
         let drafts = (1...65).map { offset in
             Draft(title: "容量测试 " + String(offset), due: Due(kind: .timed, date: Date().addingTimeInterval(Double(offset) * 86400 + 3600), zone: zone.identifier))
         }
@@ -341,8 +359,8 @@ extension TaskTests {
             ("下周一早上九点提醒我交房租", "交房租", .atDue, "2026-11-23T01:00:00Z"),
             ("提醒我在下周一上午9:00交房租", "交房租", .atDue, "2026-11-23T01:00:00Z"),
             ("请在下周一早上九点提醒我交房租", "交房租", .atDue, "2026-11-23T01:00:00Z"),
-            ("下周一早上九点房租到期", "房租到期", .previousDay, "2026-11-22T01:00:00Z"),
-            ("房租下周一到期", "房租到期", .previousDay, "2026-11-22T12:00:00Z"),
+            ("下周一早上九点房租到期", "房租到期", .followDefault, "2026-11-22T12:00:00Z"),
+            ("房租下周一到期", "房租到期", .followDefault, "2026-11-22T12:00:00Z"),
             ("下周一早上九点提醒我交房租，提前两小时提醒", "交房租", .lead, "2026-11-22T23:00:00Z"),
             ("下周一上午九点交房租，提前两小时提醒我", "交房租", .lead, "2026-11-22T23:00:00Z"),
             ("下周一九点提醒我交房租，提前两小时", "交房租", .lead, "2026-11-22T23:00:00Z"),
@@ -350,8 +368,8 @@ extension TaskTests {
             ("房租下周一到期，周日九点提醒我", "房租到期", .custom, "2026-11-22T01:00:00Z"),
             ("下周一九点记得提醒我交房租", "交房租", .atDue, "2026-11-23T01:00:00Z"),
             ("设定明天早上八点闹钟", "设定闹钟", .atDue, "2026-11-21T00:00:00Z"),
-            ("下周一上午九点提醒我妈吃药", "提醒我妈吃药", .previousDay, "2026-11-22T01:00:00Z"),
-            ("下周一早上九点付账，备注提醒我问小陈", "付账", .previousDay, "2026-11-22T01:00:00Z"),
+            ("下周一上午九点提醒我妈吃药", "提醒我妈吃药", .followDefault, "2026-11-22T12:00:00Z"),
+            ("下周一早上九点付账，备注提醒我问小陈", "付账", .followDefault, "2026-11-22T12:00:00Z"),
             ("提醒我明早九点复诊", "复诊", .atDue, "2026-11-21T01:00:00Z")
         ]
         for (text, title, rule, notification) in cases {
@@ -410,7 +428,7 @@ extension TaskTests {
     @MainActor func testReminderEditIsTransactionalAndAnExistingRuleSurvivesReload() throws {
         let now = date("2026-11-20T02:00:00Z")
         var draft = Draft(title: "赶车", notes: "一号站台",
-                          due: Due(kind: .timed, date: date("2026-11-23T01:00:00Z"), zone: zone.identifier))
+                          due: Due(kind: .timed, date: date("2026-11-23T01:00:00Z"), zone: zone.identifier), rule: .previousDay)
         let store = try makeStore()
         let item = Item(draft, now: now)
         store.context.insert(item)
@@ -507,5 +525,124 @@ extension TaskTests {
         XCTAssertEqual(stored.desiredReminder, slot)
         XCTAssertEqual(center.requests.count, 1)
         XCTAssertEqual(try store.context.fetchCount(FetchDescriptor<Item>()), 1)
+    }
+}
+
+extension TaskTests {
+    func testMorningReminderSeparatesClockCommandAndAction() throws {
+        let morning = date("2026-11-21T17:11:00Z") // 01:11 on Sunday in Shanghai
+        let parser = MandarinParser(now: morning, zone: zone)
+        for input in ["今天早晨10点提醒我，我告诉老板CVPR邮件的事情",
+                      "早晨十点提醒我，我告诉老板 CVPR 邮件的事情",
+                      "清晨，10:00提醒我，我需要告诉老板CVPR邮件的事情"] {
+            let draft = try XCTUnwrap(MandarinParser.directDraft(from: parser.parse(input)), input)
+            XCTAssertEqual(draft.title, "告诉老板 CVPR 邮件的事情", input)
+            XCTAssertEqual(draft.due.date, date("2026-11-22T02:00:00Z"))
+            XCTAssertEqual(draft.nextReminder(after: morning, defaultAdvance: .minutes(15)), draft.due.date)
+        }
+        let later = MandarinParser(now: date("2026-11-22T06:00:00Z"), zone: zone)
+        XCTAssertEqual(MandarinParser.directDraft(from: later.parse("早晨十点提醒我发邮件"))?.due.date, date("2026-11-23T02:00:00Z"))
+        XCTAssertNil(MandarinParser.directDraft(from: later.parse("十点开会")))
+        let people = try XCTUnwrap(MandarinParser.directDraft(from: parser.parse("明天早晨十点提醒我，我和小陈告诉老板CVPR结果，备注不要改 CVPR 2027")))
+        XCTAssertEqual(people.title, "我和小陈告诉老板 CVPR 结果")
+        XCTAssertEqual(people.notes, "不要改 CVPR 2027")
+        XCTAssertEqual(MandarinParser.directDraft(from: parser.parse("明天早晨十点提醒我妈吃药"))?.title, "提醒我妈吃药")
+        XCTAssertEqual(ActionTitle.suggestion(for: "早晨提醒我，我告诉老板CVPR邮件的事情"), "告诉老板 CVPR 邮件的事情")
+        XCTAssertNil(ActionTitle.suggestion(for: "早晨提醒我妈吃药"))
+        XCTAssertNil(ActionTitle.suggestion(for: "告诉老板 CVPR 邮件的事情"))
+    }
+
+    func testDefaultEveningAndArbitraryOffsetsInTaskZone() {
+        let local = Due(kind: .timed, date: date("2027-01-01T02:00:00Z"), zone: zone.identifier)
+        var d = Draft(title: "交报告", due: local)
+        XCTAssertEqual(d.nextReminder(after: .distantPast), date("2026-12-31T12:00:00Z"))
+        XCTAssertEqual(d.nextReminder(after: .distantPast, defaultAdvance: .minutes(120)), date("2027-01-01T00:00:00Z"))
+        XCTAssertEqual(d.nextReminder(after: .distantPast, defaultAdvance: .minutes(15)), date("2027-01-01T01:45:00Z"))
+        d.due.kind = .allDay
+        XCTAssertEqual(d.nextReminder(after: .distantPast, defaultAdvance: .minutes(15)), date("2026-12-31T15:45:00Z"))
+        d.due = Due(kind: .timed, date: date("2027-03-14T19:00:00Z"), zone: "America/New_York")
+        XCTAssertEqual(d.nextReminder(after: .distantPast), date("2027-03-14T01:00:00Z"))
+        d.rule = .previousEvening
+        XCTAssertEqual(d.nextReminder(after: .distantPast, defaultAdvance: .minutes(75)), date("2027-03-14T01:00:00Z"))
+        XCTAssertEqual(d.nextReminder(after: date("2027-03-14T10:00:00Z")), d.due.date)
+        d.rule = .off
+        XCTAssertNil(d.nextReminder(after: .distantPast, defaultAdvance: .minutes(120)))
+    }
+
+    @MainActor func testGlobalChangeReschedulesFollowersAndPreservesOverrides() async throws {
+        let center = TestCenter(); center.status = .authorized
+        let container = try LocalDatabase.open(configuration: ModelConfiguration(isStoredInMemoryOnly: true))
+        let store = try TaskStore(container, center: center)
+        let clock = Due(kind: .timed, date: Date().addingTimeInterval(4 * 86400), zone: zone.identifier)
+        let drafts = [Draft(title: "跟随", due: clock), Draft(title: "单条", due: clock, rule: .lead, leadMinutes: 15),
+                      Draft(title: "明说钟点", due: clock, rule: .atDue), Draft(title: "旧规则", due: clock, rule: .previousDay),
+                      Draft(title: "关闭", due: clock, rule: .off), Draft(title: "完成", due: clock)]
+        let items = try store.insert(drafts)
+        try store.toggle(items[5])
+        let prior = items.map(\.desiredReminder)
+        try store.savePreferences(AppPreferences(advance: .minutes(120), language: .mandarin, vocabulary: "CVPR\nMyProject"))
+        let mustRing = clock.normalized.date.addingTimeInterval(-7200)
+        XCTAssertEqual(items[0].desiredReminder, mustRing)
+        XCTAssertEqual(Array(items.map(\.desiredReminder).dropFirst()), Array(prior.dropFirst()))
+        let key = "saywhen." + items[0].id.uuidString
+        for _ in 0..<80 {
+            if let req = center.requests[key], (req.trigger as? UNCalendarNotificationTrigger)?.nextTriggerDate() == mustRing { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual((center.requests[key]?.trigger as? UNCalendarNotificationTrigger)?.nextTriggerDate(), mustRing)
+        XCTAssertEqual(center.requests.count, 4)
+        let reopened = try TaskStore(container, center: center)
+        XCTAssertEqual(reopened.preferences.advance, .minutes(120))
+        XCTAssertEqual(reopened.preferences.vocabulary, "CVPR\nMyProject")
+        var edit = ReminderEdit(draft: items[0].draft, scheduled: items[0].desiredReminder)
+        edit.rule = .lead; edit.leadMinutes = 15
+        try store.update(items[0], with: edit.applied(to: items[0].draft))
+        try store.savePreferences(AppPreferences(advance: .minutes(90)))
+        XCTAssertEqual(items[0].desiredReminder, clock.normalized.date.addingTimeInterval(-900))
+        try store.toggle(items[5])
+        XCTAssertEqual(items[5].desiredReminder, clock.normalized.date.addingTimeInterval(-5400))
+        var follow = items[0].draft; follow.rule = .followDefault
+        try store.update(items[0], with: follow)
+        XCTAssertEqual(items[0].desiredReminder, clock.normalized.date.addingTimeInterval(-5400))
+        XCTAssertThrowsError(try store.savePreferences(AppPreferences(advance: .minutes(-1))))
+        XCTAssertEqual(store.preferences.advance, .minutes(90))
+    }
+
+    @MainActor func testUpgradeFromVersionOnePreservesTaskAndReminder() throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appending(path: "default.store")
+        let clock = Due(kind: .timed, date: Date().addingTimeInterval(5 * 86400), zone: zone.identifier)
+        let id: UUID = try autoreleasepool {
+            let oldSchema = Schema(versionedSchema: SchemaV1.self)
+            let old = try ModelContainer(for: oldSchema, configurations: ModelConfiguration(schema: oldSchema, url: file))
+            let context = ModelContext(old)
+            let item = Item(Draft(title: "早晨提醒我，我告诉同事邮件的事情", notes: "原有备注", due: clock, rule: .previousDay))
+            item.calendarLink = Data([1,2,3])
+            context.insert(item); try context.save()
+            return item.id
+        }
+        let current = try LocalDatabase.open(configuration: ModelConfiguration(url: file, cloudKitDatabase: .none))
+        let store = try TaskStore(current, center: TestCenter())
+        let old = try XCTUnwrap(store.item(id: id))
+        let before = old.desiredReminder
+        XCTAssertEqual(old.draft.rule, .previousDay)
+        XCTAssertEqual(old.title, "早晨提醒我，我告诉同事邮件的事情")
+        XCTAssertEqual(old.notes, "原有备注")
+        XCTAssertEqual(old.calendarLink, Data([1,2,3]))
+        XCTAssertEqual(store.preferences.advance, .previousEvening)
+        try store.savePreferences(AppPreferences(advance: .minutes(15)))
+        XCTAssertEqual(old.desiredReminder, before)
+        XCTAssertEqual(try store.item(id: id)?.id, id)
+    }
+
+    func testSpeechHintsPreserveOnlyMatchingSpellings() throws {
+        let words = SpeechVocabulary(personal: "OpenAI\nProjectX\ncvpr\nOpenAI")
+        XCTAssertEqual(words.terms.filter { $0 == "OpenAI" }.count, 1)
+        XCTAssertEqual(words.display("交 C V P R 的 P.D.F. 给 Git Hub"), "交 cvpr 的 PDF. 给 GitHub")
+        XCTAssertEqual(words.display("发 CPR 急救文档，不要把 get 改掉"), "发 CPR 急救文档，不要把 get 改掉")
+        XCTAssertEqual(words.display("联系 Project X 的 Alice"), "联系 ProjectX 的 Alice")
+        XCTAssertThrowsError(try AppPreferences(vocabulary: String(repeating:"A",count:65)).validated())
     }
 }

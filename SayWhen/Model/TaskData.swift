@@ -2,7 +2,7 @@ import Foundation
 import SwiftData
 
 enum DateKind: String, Codable, CaseIterable { case none, allDay, timed }
-enum ReminderRule: String, Codable, CaseIterable { case previousDay, atDue, lead, custom, off }
+enum ReminderRule: String, Codable, CaseIterable { case followDefault, previousEvening, previousDay, atDue, lead, custom, off }
 
 enum ReminderIssue {
     case denied, pending, full, needsTime
@@ -97,22 +97,24 @@ struct Draft: Equatable {
     var title = ""
     var notes = ""
     var due = Due()
-    var rule = ReminderRule.previousDay
+    var rule = ReminderRule.followDefault
     var leadMinutes = 120
     var customTime = Date()
     var valid: Bool { !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var reminderLabel: String {
         switch rule {
+        case .followDefault: "跟随全局"
+        case .previousEvening: DefaultAdvance.previousEvening.label
         case .previousDay: "提前一天"
         case .atDue: "到点提醒"
-        case .lead: "提前 \(leadMinutes) 分钟"
+        case .lead: DefaultAdvance.label(minutes: leadMinutes)
         case .custom: "自选时间"
         case .off: "仅保存"
         }
     }
 
-    func nextReminder(after now: Date) -> Date? {
+    func nextReminder(after now: Date, defaultAdvance: DefaultAdvance = .previousEvening) -> Date? {
         guard due.kind != .none, rule != .off else { return nil }
         if rule == .custom { return customTime > now ? customTime : nil }
         let cal = due.calendar
@@ -123,7 +125,9 @@ struct Draft: Equatable {
         switch rule {
         case .off, .custom: return nil
         case .atDue: return due.kind == .timed ? due.date : nil
-        case .lead: proposed = cal.date(byAdding: .minute, value: -leadMinutes, to: due.date)
+        case .followDefault: proposed = defaultAdvance.time(for: due)
+        case .previousEvening: proposed = DefaultAdvance.previousEvening.time(for: due)
+        case .lead: proposed = DefaultAdvance.minutes(leadMinutes).time(for: due)
         case .previousDay:
             let previous = cal.date(byAdding: .day, value: -1, to: due.date)
             if due.kind == .allDay {
@@ -139,11 +143,14 @@ struct Draft: Equatable {
 struct ReminderEdit {
     var rule: ReminderRule
     var time: Date
+    var leadMinutes: Int
 
-    init(draft: Draft, scheduled: Date?, chooseTime: Bool = false, now: Date = .now) {
+    init(draft: Draft, scheduled: Date?, chooseTime: Bool = false, now: Date = .now,
+         defaultAdvance: DefaultAdvance = .previousEvening) {
         rule = chooseTime ? .custom : draft.rule
+        leadMinutes = draft.leadMinutes
         if let scheduled, scheduled > now { time = scheduled }
-        else if let next = draft.nextReminder(after: now) { time = next }
+        else if let next = draft.nextReminder(after: now, defaultAdvance: defaultAdvance) { time = next }
         else if draft.due.kind == .timed && draft.due.date > now { time = draft.due.date }
         else { time = draft.due.calendar.dateInterval(of: .hour, for: now)?.end ?? now.addingTimeInterval(3600) }
     }
@@ -157,6 +164,7 @@ struct ReminderEdit {
         var result = draft
         result.rule = rule
         if rule == .custom { result.customTime = time }
+        if rule == .lead { result.leadMinutes = leadMinutes }
         return result
     }
 }
@@ -190,7 +198,7 @@ enum SchemaV1: VersionedSchema {
         var reminderStatus: String
         var calendarLink: Data?
 
-        init(_ draft: Draft, now: Date = .now) {
+        init(_ draft: Draft, now: Date = .now, defaultAdvance: DefaultAdvance = .previousEvening) {
             id = UUID()
             created = now
             isDone = false
@@ -207,7 +215,7 @@ enum SchemaV1: VersionedSchema {
             customTime = draft.customTime
             revision = 0
             reminderStatus = ""
-            apply(draft, now: now)
+            apply(draft, now: now, defaultAdvance: defaultAdvance)
         }
 
         var draft: Draft {
@@ -234,7 +242,7 @@ enum SchemaV1: VersionedSchema {
             return due.calendar.compare(time, to: now, toGranularity: .day) == .orderedAscending ? nil : .needsTime
         }
 
-        func apply(_ new: Draft, now: Date = .now) {
+        func apply(_ new: Draft, now: Date = .now, defaultAdvance: DefaultAdvance = .previousEvening) {
             let value = new.due.normalized
             let scheduleChanged = revision == 0 || kind != value.kind.rawValue || time != value.date ||
                 zone != value.zone || rule != new.rule.rawValue || leadMinutes != new.leadMinutes || customTime != new.customTime
@@ -250,25 +258,25 @@ enum SchemaV1: VersionedSchema {
             leadMinutes = new.leadMinutes
             customTime = new.customTime
             revision += 1
-            if scheduleChanged { resetReminder(now: now) }
+            if scheduleChanged { resetReminder(now: now, defaultAdvance: defaultAdvance) }
         }
 
-        func resetReminder(now: Date = .now) {
-            desiredReminder = isDone ? nil : draft.nextReminder(after: now)
+        func resetReminder(now: Date = .now, defaultAdvance: DefaultAdvance = .previousEvening) {
+            desiredReminder = isDone ? nil : draft.nextReminder(after: now, defaultAdvance: defaultAdvance)
             reminderStatus = desiredReminder == nil ? "" : "提醒待安排"
         }
 
-        func toggle() {
+        func toggle(defaultAdvance: DefaultAdvance = .previousEvening) {
             isDone.toggle()
             completed = isDone ? .now : nil
             revision += 1
-            resetReminder()
+            resetReminder(defaultAdvance: defaultAdvance)
         }
     }
 }
 typealias Item = SchemaV1.Item
 
 enum MigrationPlan: SchemaMigrationPlan {
-    static var schemas: [any VersionedSchema.Type] { [SchemaV1.self] }
-    static var stages: [MigrationStage] { [] }
+    static var schemas: [any VersionedSchema.Type] { [SchemaV1.self, SchemaV2.self] }
+    static var stages: [MigrationStage] { [.lightweight(fromVersion: SchemaV1.self, toVersion: SchemaV2.self)] }
 }

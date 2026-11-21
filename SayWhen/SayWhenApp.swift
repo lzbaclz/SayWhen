@@ -71,8 +71,7 @@ final class Delegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterD
         }
     }
     private static func openStore() throws -> TaskStore {
-        let container = try ModelContainer(for: SchemaV1.Item.self, migrationPlan: MigrationPlan.self)
-        let store = TaskStore(container)
+        let store = try TaskStore(LocalDatabase.open())
         store.openItems = try store.page(done: false, limit: 40)
         return store
     }

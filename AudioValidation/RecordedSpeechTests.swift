@@ -92,7 +92,7 @@ private struct Observation: Encodable {
 
     private func run(_ clips: [Clip], in folder: URL) async throws {
         XCTAssertEqual(SFSpeechRecognizer.authorizationStatus(), .authorized)
-        let store = try TaskStore(ModelContainer(for: Item.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true)),
+        let store = try TaskStore(LocalDatabase.open(configuration: ModelConfiguration(isStoredInMemoryOnly: true)),
                                   center: IsolatedNotifications())
         var unavailable = 0
         for clip in clips {
@@ -141,7 +141,7 @@ private struct Observation: Encodable {
         let clip = try XCTUnwrap(clips.first { $0.id == "5_2197_20170630085624" })
         let input = try ReplayInput(url: folder.appending(path: clip.file))
         let capture = Capture(makeInput: { input })
-        let store = try TaskStore(ModelContainer(for: Item.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true)),
+        let store = try TaskStore(LocalDatabase.open(configuration: ModelConfiguration(isStoredInMemoryOnly: true)),
                                   center: IsolatedNotifications())
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let previous = scene.windows.first { $0.isKeyWindow }

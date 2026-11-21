@@ -20,15 +20,39 @@ extension UNUserNotificationCenter: ReminderCenter {
     var openItems: [Item] = []
     var change = 0
     var errorMessage: String?
+    private(set) var preferences: AppPreferences
     private let center: any ReminderCenter
     private var reconciling = false
     private var needsPass = false
     private var requestPermission = false
 
-    init(_ container: ModelContainer, center: any ReminderCenter = UNUserNotificationCenter.current()) {
+    init(_ container: ModelContainer, center: any ReminderCenter = UNUserNotificationCenter.current()) throws {
         self.center = center
-        context = ModelContext(container)
+        let context = ModelContext(container)
         context.autosaveEnabled = false
+        self.context = context
+        preferences = try context.fetch(FetchDescriptor<SchemaV2.Settings>()).first?.value ?? AppPreferences()
+    }
+
+    func savePreferences(_ proposed: AppPreferences) throws {
+        let value = try proposed.validated()
+        guard value != preferences else { return }
+        let follows = ReminderRule.followDefault.rawValue
+        let none = DateKind.none.rawValue
+        let query = FetchDescriptor<Item>(predicate: #Predicate { !$0.isDone && $0.rule == follows && $0.kind != none })
+        let affected = value.advance == preferences.advance ? [] : try context.fetch(query)
+        let record = try context.fetch(FetchDescriptor<SchemaV2.Settings>()).first ?? SchemaV2.Settings()
+        if record.modelContext == nil { context.insert(record) }
+        record.apply(value)
+        let now = Date()
+        for item in affected {
+            if item.reminderStatus == "已安排", let old = item.desiredReminder, old <= now { continue }
+            item.resetReminder(now: now, defaultAdvance: value.advance)
+        }
+        // The preference and the desired notification times commit or roll back together.
+        try commit()
+        preferences = value
+        if !affected.isEmpty { refresh(ask: affected.contains { $0.desiredReminder != nil }) }
     }
 
     func page(done: Bool, limit: Int) throws -> [Item] {
@@ -49,7 +73,7 @@ extension UNUserNotificationCenter: ReminderCenter {
 
     @discardableResult func insert(_ drafts: [Draft]) throws -> [Item] {
         guard !drafts.isEmpty, drafts.allSatisfy(\.valid) else { throw StoreError.emptyTitle }
-        let items = drafts.map { Item($0) }
+        let items = drafts.map { Item($0, defaultAdvance: preferences.advance) }
         for item in items { context.insert(item) }
         try commit()
         refresh(ask: items.contains { $0.desiredReminder != nil })
@@ -59,13 +83,13 @@ extension UNUserNotificationCenter: ReminderCenter {
     func update(_ item: Item, with draft: Draft) throws {
         guard draft.valid else { throw StoreError.emptyTitle }
         let old = item.desiredReminder
-        item.apply(draft)
+        item.apply(draft, defaultAdvance: preferences.advance)
         try commit()
         refresh(ask: item.desiredReminder != nil && item.desiredReminder != old)
     }
 
     func toggle(_ item: Item) throws {
-        item.toggle()
+        item.toggle(defaultAdvance: preferences.advance)
         try commit()
         refresh(ask: item.desiredReminder != nil)
     }
@@ -113,7 +137,7 @@ extension UNUserNotificationCenter: ReminderCenter {
         // If permission or a system slot became available too late, recover only
         // requests that never made it into the system. Do not repeat a delivered alert.
         for item in items where (item.desiredReminder ?? .distantPast) <= now && item.reminderStatus != "已安排" {
-            item.resetReminder(now: now)
+            item.resetReminder(now: now, defaultAdvance: preferences.advance)
         }
         let future = items.filter { ($0.desiredReminder ?? .distantPast) > now }.sorted {
             $0.desiredReminder! < $1.desiredReminder!

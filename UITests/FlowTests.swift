@@ -133,7 +133,7 @@ extension FlowTests {
         let due = cal.dateInterval(of: .minute, for: Date().addingTimeInterval(90))!.start
         let day = cal.isDateInToday(due) ? "今天" : "明天"
         let clock = String(format: "%02d:%02d", cal.component(.hour, from: due), cal.component(.minute, from: due))
-        let name = "回到待办" + String(UUID().uuidString.prefix(6))
+        let name = "回到待办" + String(Int.random(in: 100000...999999))
         field.tap()
         field.typeText(day + clock + name)
         app.buttons["完成"].tap()
@@ -165,7 +165,7 @@ extension FlowTests {
     }
 
     func testReceiptOffersImmediateCorrectionAndUndo() throws {
-        let marker = String(UUID().uuidString.prefix(5))
+        let marker = String(Int.random(in: 10000...99999))
         let title = "交油" + marker
         enterUtterance("下周一早上九点提醒我" + title + "，备注带上水")
         let receipt = app.buttons["receipt.editTitle"]
@@ -193,7 +193,7 @@ extension FlowTests {
     }
 
     func testKnownDayAsksOnlyForTimeAndSupportsAllDay() {
-        let name = "聚会" + String(UUID().uuidString.prefix(5))
+        let name = "聚会" + String(Int.random(in: 10000...99999))
         enterUtterance("提醒我明天晚上" + name)
         let save = app.navigationBars["核对待办"].buttons["保存"]
         XCTAssertTrue(app.staticTexts["明天晚上几点提醒？"].waitForExistence(timeout: 4))
@@ -224,7 +224,7 @@ extension FlowTests {
     }
 
     func testCancelCustomReminderKeepsRuleAcrossRelaunch() {
-        let name = "交房租" + String(UUID().uuidString.prefix(5))
+        let name = "交房租" + String(Int.random(in: 10000...99999))
         enterUtterance("下周一早上九点提醒我" + name)
         let open = app.buttons["打开备注，" + name]
         XCTAssertTrue(open.waitForExistence(timeout: 5))
@@ -257,6 +257,91 @@ extension FlowTests {
         XCTAssertTrue(reminder.label.contains("提前一天") || (reminder.value as? String)?.contains("提前一天") == true,
                       app.debugDescription)
         app.swipeUp()
+        app.buttons["删除待办"].tap()
+        app.alerts.buttons["删除"].tap()
+    }
+}
+
+extension FlowTests {
+    func testGlobalLeadAndIndividualOverrideFromNormalEntry() {
+        let name = "发送报告" + String(Int.random(in: 10000...99999))
+        let settings = app.buttons["settings"]
+        let globalMode = app.buttons["settings.default"]
+        settings.tap()
+        globalMode.tap()
+        app.buttons["提前 2 小时"].tap()
+        app.buttons["settings.save"].tap()
+        app.terminate()
+        app.launch()
+        settings.tap()
+        XCTAssertTrue(globalMode.label.contains("提前 2 小时") || (globalMode.value as? String)?.contains("提前 2 小时") == true)
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "全局默认提醒"; screenshot.lifetime = .keepAlways; add(screenshot)
+        app.navigationBars["设置"].buttons["取消"].tap()
+
+        enterUtterance("大后天早晨十点" + name)
+        let receipt = app.buttons["receipt.editTitle"]
+        XCTAssertTrue(receipt.waitForExistence(timeout: 5))
+        XCTAssertTrue(receipt.label.contains("08:00"), receipt.label)
+        let open = app.buttons["打开备注，" + name]
+        open.tap()
+        app.buttons["editor.reminder"].tap()
+        let mode = app.buttons["reminder.mode"]
+        mode.tap()
+        app.buttons["提前 15 分钟"].tap()
+        let expected = app.staticTexts.matching(NSPredicate(format:"label CONTAINS %@ AND label CONTAINS %@", "提醒", "09:45")).firstMatch
+        XCTAssertTrue(expected.exists, app.debugDescription)
+        app.buttons["reminder.confirm"].tap()
+        app.buttons["返回"].tap()
+        settings.tap()
+        globalMode.tap()
+        app.buttons["自定义提前量"].tap()
+        let amount = app.textFields["advance.amount"]
+        XCTAssertTrue(amount.exists)
+        amount.tap()
+        amount.typeText(XCUIKeyboardKey.delete.rawValue + "3")
+        app.buttons["settings.save"].tap()
+        settings.tap()
+        XCTAssertEqual(amount.value as? String, "3")
+        XCTAssertTrue(app.segmentedControls.buttons["小时"].isSelected)
+        globalMode.tap()
+        app.buttons["前一天晚上 20:00"].tap()
+        app.buttons["settings.save"].tap()
+        open.tap()
+        app.buttons["editor.reminder"].tap()
+        XCTAssertTrue(expected.exists)
+        let override = XCTAttachment(screenshot: app.screenshot())
+        override.name = "单条提前十五分钟"; override.lifetime = .keepAlways; add(override)
+        mode.tap()
+        app.buttons["跟随全局 · 前一天晚上 20:00"].tap()
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format:"label CONTAINS %@ AND label CONTAINS %@", "提醒", "20:00")).firstMatch.exists)
+        app.buttons["reminder.confirm"].tap()
+        app.swipeUp()
+        app.buttons["删除待办"].tap()
+        app.alerts.buttons["删除"].tap()
+    }
+
+    func testSpokenActionTitleAndPreviouslySavedTitle() {
+        let suffix = String(Int.random(in: 1000...9999))
+        let name = "告诉同事 CVPR 邮件" + suffix
+        enterUtterance("明天早晨十点提醒我，我告诉同事CVPR邮件" + suffix)
+        let open = app.buttons["打开备注，" + name]
+        XCTAssertTrue(open.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(app.buttons["receipt.editTitle"].label.contains("10:00"))
+        app.buttons["撤销"].tap()
+
+        let old = "早晨提醒我，我告诉同事CVPR邮件" + suffix
+        app.buttons["add"].tap()
+        let title = app.descendants(matching:.any).matching(identifier:"editor.title").firstMatch
+        title.tap()
+        title.typeText(old)
+        app.buttons["editor.save"].tap()
+        app.buttons["打开备注，" + old].tap()
+        app.buttons["editor.cleanTitle"].tap()
+        XCTAssertEqual(title.value as? String, name)
+        app.buttons["返回"].tap()
+        XCTAssertTrue(open.waitForExistence(timeout: 3))
+        open.tap()
         app.buttons["删除待办"].tap()
         app.alerts.buttons["删除"].tap()
     }

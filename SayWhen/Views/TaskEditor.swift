@@ -103,12 +103,16 @@ struct TaskEditor: View {
             Form {
                 Section("事项") {
                     TextField("待办标题", text: $draft.title, axis: .vertical).accessibilityIdentifier("editor.title")
+                    if item != nil, let suggestion = ActionTitle.suggestion(for: draft.title) {
+                        Button("整理为「\(suggestion)」") { draft.title = suggestion }
+                            .font(.subheadline).accessibilityIdentifier("editor.cleanTitle")
+                    }
                 }
                 Section("日期与时间") { DateFields(due: $draft.due) }
                 if draft.due.kind != .none {
                     Section("提醒") {
                         Button { reminderPanel = true } label: {
-                            LabeledContent("提醒方式", value: draft.reminderLabel)
+                            LabeledContent("提醒方式", value: draft.rule == .followDefault ? "跟随全局 · " + store.preferences.advance.label : draft.reminderLabel)
                         }
                         .accessibilityHint("点开修改，确定后生效")
                         .accessibilityIdentifier("editor.reminder")
@@ -227,7 +231,7 @@ struct TaskEditor: View {
 
     private var displayedReminder: Date? {
         if let item, savedDraft == draft { return item.desiredReminder }
-        return draft.nextReminder(after: .now)
+        return draft.nextReminder(after: .now, defaultAdvance: store.preferences.advance)
     }
 
     private func calendarAction(_ item: Item) -> String {

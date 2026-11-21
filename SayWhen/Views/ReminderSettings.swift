@@ -7,6 +7,8 @@ struct ReminderSettings: View {
     let save: (ReminderEdit) throws -> Void
 
     @State private var edit: ReminderEdit
+    @State private var choice: TimingChoice
+    @State private var interval: IntervalInput
     @State private var error: String?
     @State private var confirmLate = false
     @Environment(\.dismiss) private var dismiss
@@ -18,7 +20,20 @@ struct ReminderSettings: View {
         self.draft = draft
         self.item = item
         self.save = save
-        _edit = State(initialValue: ReminderEdit(draft: draft, scheduled: scheduled, chooseTime: chooseTime))
+        let value = ReminderEdit(draft: draft, scheduled: scheduled, chooseTime: chooseTime, defaultAdvance: store.preferences.advance)
+        _edit = State(initialValue: value)
+        _choice = State(initialValue: TimingChoice(rule: value.rule, minutes: value.leadMinutes))
+        _interval = State(initialValue: IntervalInput(minutes: value.leadMinutes))
+    }
+
+    private var proposal: ReminderEdit? {
+        var next = edit
+        next.rule = choice.rule
+        if choice.rule == .lead {
+            guard let minutes = choice.interval(using: interval) else { return nil }
+            next.leadMinutes = minutes
+        }
+        return next
     }
 
     var body: some View {
@@ -43,25 +58,31 @@ struct ReminderSettings: View {
                 }
                 Section("到期") { Text(draft.due.label) }
                 Section {
-                    Picker("提醒方式", selection: $edit.rule) {
-                        if draft.due.kind == .timed { Text("到点提醒").tag(ReminderRule.atDue) }
-                        Text("提前一天").tag(ReminderRule.previousDay)
-                        if draft.rule == .lead { Text("提前 \(draft.leadMinutes) 分钟").tag(ReminderRule.lead) }
-                        Text("自选时间").tag(ReminderRule.custom)
-                        Text("仅保存").tag(ReminderRule.off)
+                    Picker("提醒方式", selection: $choice) {
+                        Text("跟随全局 · " + store.preferences.advance.label).tag(TimingChoice.rule(.followDefault))
+                        if draft.due.kind == .timed { Text("到点提醒").tag(TimingChoice.rule(.atDue)) }
+                        AdvanceChoices()
+                        Text("提前一天").tag(TimingChoice.rule(.previousDay))
+                        Text("自选时间").tag(TimingChoice.rule(.custom))
+                        Text("仅保存").tag(TimingChoice.rule(.off))
                     }
                     .pickerStyle(.menu)
                     .accessibilityIdentifier("reminder.mode")
-                    if edit.rule == .custom {
+                    if choice == .otherInterval { IntervalField(input: $interval) }
+                    if choice.rule == .lead && draft.due.kind == .allDay {
+                        Text("全天事项从当天 00:00 计算提前量。").font(.footnote).foregroundStyle(.secondary)
+                    }
+                    if choice.rule == .custom {
                         TaskDatePicker(title: "提醒时间", date: $edit.time, includesTime: true, zone: draft.due.calendar.timeZone)
                         if edit.time <= .now {
                             Text("请选择将来的提醒时刻。").font(.footnote)
                         }
                     }
-                    if let updated = try? edit.applied(to: draft), let next = updated.nextReminder(after: .now) {
+                    if let proposal, let updated = try? proposal.applied(to: draft),
+                       let next = updated.nextReminder(after: .now, defaultAdvance: store.preferences.advance) {
                         LabeledContent(item?.reminderIssue() == .denied ? "计划提醒" : "将提醒于",
                                        value: Due.format(next, zone: draft.due.calendar.timeZone, pattern: "yyyy年M月d日 EEEE HH:mm z"))
-                    } else if edit.rule != .off && edit.rule != .custom {
+                    } else if proposal != nil && choice.rule != .off && choice.rule != .custom {
                         Text("默认时刻已过，可自选时间或仅保存。").font(.footnote)
                     }
                 }
@@ -74,10 +95,10 @@ struct ReminderSettings: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("确定") {
-                        if edit.isLate(for: draft.due) { confirmLate = true }
+                        if proposal?.isLate(for: draft.due) == true { confirmLate = true }
                         else { confirm() }
                     }
-                    .disabled(edit.rule == .custom && edit.time <= .now)
+                    .disabled(proposal == nil || (choice.rule == .custom && edit.time <= .now))
                     .accessibilityIdentifier("reminder.confirm")
                 }
             }
@@ -91,7 +112,8 @@ struct ReminderSettings: View {
     }
 
     private func confirm() {
-        do { try save(edit); dismiss() }
+        guard let proposal else { return }
+        do { try save(proposal); dismiss() }
         catch { self.error = error.localizedDescription }
     }
 }

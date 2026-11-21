@@ -2,11 +2,11 @@ import SwiftUI
 import os
 
 private enum EditorRoute: Identifiable {
-    case new, privacy, edit(Item), rename(Item), reminder(Item), review([ParsedTask], String)
+    case new, settings, edit(Item), rename(Item), reminder(Item), review([ParsedTask], String)
     var id: String {
         switch self {
         case .new: "new"
-        case .privacy: "privacy"
+        case .settings: "settings"
         case .edit(let item): item.id.uuidString
         case .rename(let item): "rename-" + item.id.uuidString
         case .reminder(let item): "reminder-" + item.id.uuidString
@@ -91,9 +91,9 @@ struct TaskList: View {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
                         capture.cancel()
-                        route = .privacy
-                    } label: { Label("隐私政策", systemImage: "hand.raised") }
-                    .accessibilityIdentifier("privacy")
+                        route = .settings
+                    } label: { Label("设置", systemImage: "gearshape") }
+                    .accessibilityIdentifier("settings")
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button { capture.cancel(); route = .new } label: { Image(systemName: "plus") }
@@ -105,7 +105,7 @@ struct TaskList: View {
                 if !addedItems.isEmpty { scheduleFeedbackDismissal() }
             }) { route in
                 switch route {
-                case .privacy: PrivacyPolicyView()
+                case .settings: GlobalSettings(store: store)
                 case .new: TaskEditor(store: store, onInsert: { added([$0]) })
                 case .edit(let item): TaskEditor(store: store, item: item)
                 case .rename(let item): QuickTitleEditor(item: item, store: store)
@@ -135,8 +135,9 @@ struct TaskList: View {
         .task(id: phase) {
             guard phase == .active else { return }
             try? await Task.sleep(for: .milliseconds(300))
-            if !Task.isCancelled { store.refresh() }
+            if !Task.isCancelled { store.refresh(); capture.warm(store.preferences) }
         }
+        .onChange(of: store.preferences) { capture.warm(store.preferences) }
         .onChange(of: store.change) { reload() }
         .onChange(of: AppRoute.shared.itemID) { handleRoute() }
         .onChange(of: AppRoute.shared.capture) { handleRoute() }
@@ -236,7 +237,7 @@ struct TaskList: View {
                 } else if !capture.transcript.isEmpty { Text(capture.transcript).frame(maxWidth: .infinity, alignment: .leading) }
                 if capture.phase == .typing {
                     HStack {
-                        Button("再说一次") { capture.start() }
+                        Button("再说一次") { capture.start(preferences: store.preferences) }
                         if capture.message.contains("授权") || capture.message.contains("麦克风或") {
                             Button("前往设置") { openURL(URL(string: UIApplication.openSettingsURLString)!) }
                         }
@@ -259,7 +260,7 @@ struct TaskList: View {
                     if pressStart == nil {
                         pressStart = .now
                         startedFromIdle = capture.phase == .idle
-                        if startedFromIdle { clearFeedback(); capture.start() }
+                        if startedFromIdle { clearFeedback(); capture.start(preferences: store.preferences) }
                     }
                     cancelGesture = value.translation.height < -55
                 }.onEnded { value in
@@ -272,7 +273,7 @@ struct TaskList: View {
                 .accessibilityElement(children: .ignore).accessibilityLabel(capture.phase == .idle ? "按住说话" : "完成录入")
                 .accessibilityHint("轻点开始，再点完成。长按时向上滑动可取消。")
                 .accessibilityAddTraits(.isButton)
-                .accessibilityAction { if capture.phase == .idle { capture.start() } else { capture.finish() } }
+                .accessibilityAction { if capture.phase == .idle { capture.start(preferences: store.preferences) } else { capture.finish() } }
             }
         }
         .padding(.horizontal, 22).padding(.top, 12).padding(.bottom, 8)
@@ -305,7 +306,7 @@ struct TaskList: View {
         if AppRoute.shared.capture {
             AppRoute.shared.capture = false
             route = nil
-            capture.start()
+            capture.start(preferences: store.preferences)
         }
     }
 

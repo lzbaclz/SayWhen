@@ -158,7 +158,9 @@ struct TaskList: View {
             Button {
                 do {
                     let began = CACurrentMediaTime()
-                    try store.toggle(item)
+                    try store.toggle(item) {
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    }
                     DisplayMark.nextFrame(.completion, began: began)
                     toast(item.isDone ? "已完成" : "已恢复") { try store.toggle(item) }
                 } catch { store.errorMessage = error.localizedDescription }

@@ -8,6 +8,33 @@ final class TaskTests: XCTestCase {
     let zone = TimeZone(identifier: "Asia/Shanghai")!
     func date(_ value: String) -> Date { ISO8601DateFormatter().date(from: value)! }
 
+    @MainActor func testCheckmarkFeedbackFiresOncePerExplicitSavedCompletion() throws {
+        let container = try LocalDatabase.open(configuration: ModelConfiguration(isStoredInMemoryOnly: true))
+        let store = try TaskStore(container, center: TestCenter())
+        let item = try XCTUnwrap(store.insert([Draft(title: "提交报告")]).first)
+        var pulses = 0
+        func tapCheckmark() throws {
+            try store.toggle(item) {
+                pulses += 1
+                let reader = ModelContext(container)
+                let persisted = try? reader.fetch(FetchDescriptor<Item>()).first?.isDone
+                XCTAssertEqual(persisted, true)
+            }
+        }
+
+        try tapCheckmark()
+        XCTAssertEqual(pulses, 1)
+        try tapCheckmark()                  // Restore from history.
+        XCTAssertFalse(item.isDone)
+        XCTAssertEqual(pulses, 1)
+        try store.toggle(item)              // Undo the restore.
+        XCTAssertTrue(item.isDone)
+        XCTAssertEqual(pulses, 1)
+        try tapCheckmark()                  // Restore, then explicitly check again.
+        try tapCheckmark()
+        XCTAssertEqual(pulses, 2)
+    }
+
     func testTwoHundredLabeledMandarinInputs() throws {
         let parser = MandarinParser(now: date("2026-11-20T02:00:00Z"), zone: zone)
         let actions = ["去复诊","交报名表","打电话给王洁","寄快递","买苹果和牛奶","取眼镜","提交设计稿","预约牙医","给花浇水","接小陈"]

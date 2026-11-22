@@ -88,9 +88,10 @@ extension UNUserNotificationCenter: ReminderCenter {
         refresh(ask: item.desiredReminder != nil && item.desiredReminder != old)
     }
 
-    func toggle(_ item: Item) throws {
+    func toggle(_ item: Item, onMarkedDone: () -> Void = {}) throws {
         item.toggle(defaultAdvance: preferences.advance)
         try commit()
+        if item.isDone { onMarkedDone() }
         refresh(ask: item.desiredReminder != nil)
     }
 
